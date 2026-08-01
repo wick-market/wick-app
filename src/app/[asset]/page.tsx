@@ -20,7 +20,7 @@ interface Props {
 export default function AssetPage({ params }: Props) {
   const asset = params.asset.toUpperCase() as Asset;
 
-  if (!ASSETS.includes(asset) || asset === "XLM") notFound();
+  if (!ASSETS.includes(asset)) notFound();
 
   const { connect, connected } = useWallet();
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));

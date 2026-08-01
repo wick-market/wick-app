@@ -5,7 +5,7 @@ import { findActiveRounds, fetchRoundById } from "@/lib/stellar/contractReader";
 import { ASSETS, type Round } from "@/lib/domain/round";
 import { useWallet } from "@/contexts/WalletContext";
 
-const ASSETS_ARRAY = [...ASSETS].filter((a) => a !== "XLM"); // XLM not in deployed contract yet
+const ASSETS_ARRAY = [...ASSETS];
 const POLL_MS = 15_000; // re-read contract every 15s
 
 export function useContractRounds() {
