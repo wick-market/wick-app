@@ -1,16 +1,18 @@
-/**
- * MSW browser setup. Imported lazily in MockProvider — never runs on the server.
- */
 import { setupWorker } from "msw/browser";
 import { handlers } from "./handlers";
 
 export const worker = setupWorker(...handlers);
 
+// Guard: worker.start() throws if called a second time (React Strict Mode
+// double-invokes effects). This flag ensures we only configure it once.
+let started = false;
+
 export async function startMockWorker() {
+  if (started) return;
+  started = true;
+
   await worker.start({
-    onUnhandledRequest: "bypass", // don't warn on non-API requests (Next.js internals, etc.)
-    serviceWorker: {
-      url: "/mockServiceWorker.js",
-    },
+    onUnhandledRequest: "bypass",
+    serviceWorker: { url: "/mockServiceWorker.js" },
   });
 }
