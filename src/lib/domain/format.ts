@@ -13,6 +13,7 @@ const ASSET_DISPLAY_DP: Record<string, number> = {
   BTC: 2,
   ETH: 2,
   SOL: 4,
+  XLM: 4,
 };
 
 /**

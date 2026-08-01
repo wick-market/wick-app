@@ -98,7 +98,7 @@ export function AssetCard({ round, nowSec, indicativePrice }: Props) {
 
       {/* Odds */}
       {(phase === "Open" || phase === "Locked") && (
-        <ProvisionalOdds round={round} phase={phase} />
+        <ProvisionalOdds round={round} phase={phase} nowSec={nowSec} />
       )}
 
       {/* Pool bar */}

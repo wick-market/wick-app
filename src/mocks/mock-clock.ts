@@ -15,8 +15,12 @@
 
 import wsSequence from "./fixtures/ws-sequence.json";
 
-// 20× compression: 300s round = 15s real, 180s lock = 9s real
-const SPEED_FACTOR = 20;
+// Real-time: SPEED_FACTOR=1 means the mock runs at actual clock speed.
+// Betting window = 3 minutes (180s), dead window = 2 minutes (120s), settle at 5 minutes.
+// Contributors see a real 3-minute countdown exactly as users would.
+const SPEED_FACTOR = 1;
+const LOCK_OFFSET_SECS = 180;   // 3-minute betting window
+const SETTLE_OFFSET_SECS = 300; // 5-minute total round
 
 type WsMsg = Record<string, unknown>;
 type Listener = (msg: WsMsg) => void;
@@ -30,6 +34,7 @@ const indicativePrices: Record<string, number> = {
   BTC: 63038.32,
   ETH: 1867.58,
   SOL: 72.9,
+  XLM: 0.1302,
 };
 
 function emit(msg: WsMsg) {
@@ -42,14 +47,32 @@ function clearTimers() {
 }
 
 function buildRoundTimestamps(nowSec: number) {
-  const lockOffset = Math.ceil(180 / SPEED_FACTOR); // 9s
-  const settleOffset = Math.ceil(300 / SPEED_FACTOR); // 15s
+  const lockOffset = Math.ceil(LOCK_OFFSET_SECS / SPEED_FACTOR); // 180s = 3 min
+  const settleOffset = Math.ceil(SETTLE_OFFSET_SECS / SPEED_FACTOR); // 300s = 5 min
   return {
     strike_ts: nowSec,
     lock_ts: nowSec + lockOffset,
     settle_ts: nowSec + settleOffset,
   };
 }
+
+// Base strike prices per asset (raw oracle i128 with 14 decimals).
+const STRIKE_PRICES: Record<string, string> = {
+  BTC: "6303831631126319160",
+  ETH: "186758276062184737",
+  SOL: "7289616892463599",
+  XLM: "13000000000000",
+};
+
+// Asset-specific round IDs so the UI can distinguish them.
+const ROUND_IDS: Record<string, string> = {
+  BTC: "42",
+  ETH: "52",
+  SOL: "62",
+  XLM: "72",
+};
+
+const ALL_ASSETS = ["BTC", "ETH", "SOL", "XLM"] as const;
 
 function startLoop() {
   clearTimers();
@@ -67,15 +90,23 @@ function startLoop() {
     maxDelayMs = Math.max(maxDelayMs, delayMs);
 
     const timer = setTimeout(() => {
-      // Strip fixture-only fields and rewrite round timestamps
       const { _t: _tIgnored, _note: _noteIgnored, ...msg } = raw;
 
       if (msg["type"] === "round" && msg["data"]) {
-        const data = msg["data"] as Record<string, unknown>;
-        emit({
-          ...msg,
-          data: { ...data, ...ts },
-        });
+        const baseData = msg["data"] as Record<string, unknown>;
+        // Broadcast the same lifecycle event for all four assets.
+        for (const asset of ALL_ASSETS) {
+          emit({
+            ...msg,
+            data: {
+              ...baseData,
+              ...ts,
+              asset,
+              round_id: ROUND_IDS[asset],
+              strike: STRIKE_PRICES[asset],
+            },
+          });
+        }
       } else if (msg["type"] === "price") {
         // Skip — price ticks come from the separate ticker below
       } else {

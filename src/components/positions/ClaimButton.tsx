@@ -1,55 +1,48 @@
 "use client";
 
 import { useState } from "react";
-import { claim, NotImplementedError } from "@/lib/stellar/wallet";
+import { claim, parseContractError } from "@/lib/stellar/wallet";
 import { formatXlm } from "@/lib/domain/format";
+
+type TxState = "idle" | "signing" | "submitting" | "done" | "error";
 
 interface Props {
   roundId: string;
   payout: string; // stroops
 }
 
-/**
- * Triggers a claim transaction. The actual signing/submission is a stub.
- *
- * TODO: Issue #2 — implement claim() in src/lib/stellar/wallet.ts
- */
 export function ClaimButton({ roundId, payout }: Props) {
-  const [status, setStatus] = useState<"idle" | "pending" | "error" | "done">("idle");
+  const [state, setState] = useState<TxState>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   async function handleClaim() {
-    setStatus("pending");
+    setState("signing");
     setErrorMsg(null);
     try {
       await claim(roundId);
-      setStatus("done");
+      setState("done");
     } catch (err) {
-      setStatus("error");
-      if (err instanceof NotImplementedError) {
-        setErrorMsg("Claim coming soon — see CONTRIBUTING.md");
-      } else {
-        setErrorMsg(err instanceof Error ? err.message : "Unknown error");
-      }
+      setState("error");
+      setErrorMsg(parseContractError(err));
     }
   }
 
-  if (status === "done") {
-    return (
-      <span className="text-sm font-semibold text-up">Claimed ✓</span>
-    );
+  if (state === "done") {
+    return <span className="text-sm font-semibold text-up">Claimed ✓</span>;
   }
+
+  const busy = state === "signing" || state === "submitting";
 
   return (
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={() => void handleClaim()}
-        disabled={status === "pending"}
+        disabled={busy}
         className="rounded-lg bg-up px-4 py-1.5 text-sm font-semibold text-black transition-opacity hover:opacity-90 disabled:opacity-50"
       >
-        {status === "pending" ? "Claiming…" : `Claim ${formatXlm(payout)}`}
+        {busy ? "Check wallet…" : `Claim ${formatXlm(payout)}`}
       </button>
-      {errorMsg && <p className="text-xs text-wick-muted">{errorMsg}</p>}
+      {errorMsg && <p className="text-xs text-down text-right max-w-[180px]">{errorMsg}</p>}
     </div>
   );
 }

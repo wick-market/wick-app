@@ -63,6 +63,21 @@ export interface Multiples {
 }
 
 /**
+ * How far through the betting window we are, 0–1.
+ * 0 = round just opened (best time to bet).
+ * 1 = betting about to close (worst time to bet).
+ * Returns null when the window has closed.
+ */
+export function bettingWindowProgress(round: Round, nowSec: number): number | null {
+  const window = round.lock_ts - round.strike_ts;
+  if (window <= 0) return null;
+  const elapsed = nowSec - round.strike_ts;
+  if (elapsed < 0) return 0;
+  if (elapsed >= window) return null; // locked
+  return Math.min(1, elapsed / window);
+}
+
+/**
  * Compute the provisional payout multiple for each side.
  * All arithmetic in BigInt — no floats.
  *
@@ -137,7 +152,5 @@ export function secsUntilSettle(round: Round, nowSec: number): number {
 
 // ── Assets ─────────────────────────────────────────────────────────────────
 
-// XLM is deliberately excluded from the frontend (thin book, manipulation risk).
-// The backend contract accepts XLM; the frontend does not surface it.
-export const ASSETS = ["BTC", "ETH", "SOL"] as const;
+export const ASSETS = ["BTC", "ETH", "SOL", "XLM"] as const;
 export type Asset = (typeof ASSETS)[number];
