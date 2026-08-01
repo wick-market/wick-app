@@ -14,9 +14,10 @@ type TxState = "idle" | "simulating" | "signing" | "submitting" | "confirmed" | 
 interface Props {
   round: Round;
   nowSec: number;
+  onConfirmed?: () => void | Promise<void>;
 }
 
-export function BetForm({ round, nowSec }: Props) {
+export function BetForm({ round, nowSec, onConfirmed }: Props) {
   const { connected, connect, xlmBalance, refreshBalance } = useWallet();
   const [side, setSide] = useState<"Up" | "Down" | null>(null);
   const [amount, setAmount] = useState("");
@@ -41,7 +42,8 @@ export function BetForm({ round, nowSec }: Props) {
       setTxResult(result);
       setTxState("confirmed");
       setAmount("");
-      void refreshBalance(); // update XLM balance in header
+      void refreshBalance();
+      void onConfirmed?.(); // re-read round state so pool updates immediately
     } catch (err) {
       setTxState("error");
       setErrorMsg(parseContractError(err));

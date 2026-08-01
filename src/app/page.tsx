@@ -1,56 +1,113 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ASSETS, type Round } from "@/lib/domain/round";
+import { useWallet } from "@/contexts/WalletContext";
+import { useContractRounds } from "@/hooks/useContractRounds";
+import { ASSETS, getPhase, type Round } from "@/lib/domain/round";
 import { api } from "@/lib/api/client";
 import { useWebSocket, type WsMessage } from "@/lib/api/useWebSocket";
 import { AssetCard } from "@/components/market/AssetCard";
 
-/**
- * Market view — shows the current open/locked round for each of the three assets.
- * Live pool sizes and countdown come from the WebSocket feed (real) or mock-clock (mock mode).
- */
-export default function MarketPage() {
-  const [rounds, setRounds] = useState<Record<string, Round>>({});
-  const [prices, setPrices] = useState<Record<string, string>>({});
-  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
-  const [loading, setLoading] = useState(true);
+const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true";
 
-  // Tick every second to keep phase + countdowns live
+// ── Connect prompt ────────────────────────────────────────────────────────────
+
+function ConnectPrompt({ onConnect }: { onConnect: () => void }) {
+  return (
+    <div className="flex min-h-[70vh] flex-col items-center justify-center gap-8 text-center">
+      <div className="space-y-3">
+        <h1 className="text-4xl font-bold tracking-tight text-white">
+          Predict the market
+        </h1>
+        <p className="max-w-md text-lg text-wick-muted">
+          Stake XLM on whether BTC, ETH, or SOL closes above or below the
+          current price in 5 minutes. Winners split the pool.
+        </p>
+      </div>
+
+      <div className="grid max-w-sm gap-4 text-left text-sm text-wick-muted">
+        {[
+          ["⏱", "5-minute rounds", "A new price window opens every 5 minutes"],
+          ["📊", "Parimutuel payouts", "Winners split the entire losing pool"],
+          ["🔒", "Locked odds", "Betting closes 3 minutes in — no last-second edge"],
+        ].map(([icon, title, desc]) => (
+          <div key={title} className="flex gap-3">
+            <span className="text-xl">{icon}</span>
+            <div>
+              <p className="font-semibold text-white">{title}</p>
+              <p>{desc}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={onConnect}
+        className="rounded-xl bg-phase-open px-8 py-3 text-base font-semibold text-white shadow-lg transition-all hover:opacity-90 hover:shadow-phase-open/30"
+      >
+        Connect wallet to start
+      </button>
+
+      <p className="text-xs text-wick-muted">
+        Testnet only · Freighter, xBull, Albedo supported
+      </p>
+    </div>
+  );
+}
+
+// ── Market view ───────────────────────────────────────────────────────────────
+
+function MarketView() {
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [prices, setPrices] = useState<Record<string, string>>({});
+  const [mockRounds, setMockRounds] = useState<Record<string, Round>>({});
+  const { rounds: contractRounds, loading, error } = useContractRounds();
+
   useEffect(() => {
     const id = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 1000);
     return () => clearInterval(id);
   }, []);
 
-  // Initial load — fetch current round per asset
+  // Mock data fallback for UI development
   useEffect(() => {
+    if (!IS_MOCK) return;
     void Promise.allSettled(
-      ASSETS.map((asset) =>
+      [...ASSETS].filter(a => a !== "XLM").map((asset) =>
         api.getCurrentRounds(asset).then((rs) => {
-          if (rs.length > 0 && rs[0]) {
-            setRounds((prev) => ({ ...prev, [asset]: rs[0]! }));
-          }
+          if (rs[0]) setMockRounds((p) => ({ ...p, [asset]: rs[0]! }));
         })
       )
-    ).finally(() => setLoading(false));
+    );
   }, []);
 
-  // WebSocket updates — override round state from live feed
   const handleMessage = useCallback((msg: WsMessage) => {
-    if (msg.type === "round") {
-      setRounds((prev) => ({ ...prev, [msg.data.asset]: msg.data }));
+    if (msg.type === "round" && IS_MOCK) {
+      setMockRounds((p) => ({ ...p, [msg.data.asset]: msg.data }));
     }
     if (msg.type === "price") {
-      setPrices((prev) => ({ ...prev, [msg.asset]: msg.price }));
+      setPrices((p) => ({ ...p, [msg.asset]: msg.price }));
     }
   }, []);
 
   useWebSocket(handleMessage);
 
+  // Prefer real contract rounds; fall back to MSW mock rounds in dev
+  const rounds = Object.keys(contractRounds).length > 0 ? contractRounds : mockRounds;
+  const activeAssets = [...ASSETS].filter((a) => a !== "XLM");
+
   if (loading && Object.keys(rounds).length === 0) {
     return (
-      <div className="flex items-center justify-center py-24">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-wick-border border-t-phase-open" />
+      <div className="flex items-center justify-center py-24 gap-3">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-wick-border border-t-phase-open" />
+        <span className="text-sm text-wick-muted">Reading on-chain rounds…</span>
+      </div>
+    );
+  }
+
+  if (error && Object.keys(rounds).length === 0) {
+    return (
+      <div className="rounded-lg border border-down/30 bg-down-dim/20 px-4 py-3 text-center text-sm text-down">
+        Could not read contract: {error}
       </div>
     );
   }
@@ -59,22 +116,23 @@ export default function MarketPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-white">Markets</h1>
-        <p className="mt-1 text-wick-muted">
-          Bet above or below in {" "}
-          <span className="text-white font-medium">5 minutes</span>. Payouts split the pool.
+        <p className="mt-1 text-sm text-wick-muted">
+          Bet above or below in <span className="text-white font-medium">5 minutes</span>.
+          Betting closes 3 minutes in. Winners split the pot.
         </p>
       </div>
 
       <div className="grid gap-5 md:grid-cols-3">
-        {ASSETS.map((asset) => {
+        {activeAssets.map((asset) => {
           const round = rounds[asset];
           if (!round) {
             return (
               <div
                 key={asset}
-                className="flex h-64 items-center justify-center rounded-xl border border-wick-border bg-wick-surface"
+                className="flex h-64 flex-col items-center justify-center gap-2 rounded-xl border border-wick-border bg-wick-surface"
               >
-                <p className="text-sm text-wick-muted">{asset} — no active round</p>
+                <p className="text-sm font-semibold text-white">{asset}</p>
+                <p className="text-xs text-wick-muted">No active round — keeper will open one</p>
               </div>
             );
           }
@@ -90,4 +148,16 @@ export default function MarketPage() {
       </div>
     </div>
   );
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+export default function MarketPage() {
+  const { connected, connect } = useWallet();
+
+  if (!connected) {
+    return <ConnectPrompt onConnect={() => void connect()} />;
+  }
+
+  return <MarketView />;
 }
