@@ -4,11 +4,11 @@ import Link from "next/link";
 import { useWallet } from "@/contexts/WalletContext";
 
 function shortAddress(addr: string): string {
-  return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
 export function Header() {
-  const { address, connected, connect, disconnect } = useWallet();
+  const { address, connected, xlmBalance, connect, disconnect } = useWallet();
 
   return (
     <header className="sticky top-0 z-50 w-full border-b border-wick-border bg-wick-surface/95 backdrop-blur">
@@ -34,9 +34,30 @@ export function Header() {
         {/* Wallet */}
         {connected && address ? (
           <div className="flex items-center gap-3">
-            <span className="rounded-full border border-wick-border bg-wick-bg px-3 py-1.5 font-mono text-sm text-white">
+            {/* Balance */}
+            {xlmBalance !== null && (
+              <span className="hidden sm:block text-sm text-wick-muted">
+                <span className="text-white font-medium">
+                  {parseFloat(xlmBalance).toLocaleString("en-US", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </span>{" "}
+                XLM
+              </span>
+            )}
+
+            {/* Address — links to Stellar Expert */}
+            <a
+              href={`https://stellar.expert/explorer/testnet/account/${address}`}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full border border-wick-border bg-wick-bg px-3 py-1.5 font-mono text-sm text-white hover:border-white/30 transition-colors"
+              title={address}
+            >
               {shortAddress(address)}
-            </span>
+            </a>
+
             <button
               onClick={() => void disconnect()}
               className="rounded border border-wick-border px-3 py-1.5 text-sm text-wick-muted transition-colors hover:border-white/30 hover:text-white"

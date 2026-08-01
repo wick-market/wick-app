@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useWallet } from "@/contexts/WalletContext";
-import { bet, parseContractError } from "@/lib/stellar/wallet";
+import { bet, parseContractError, type TxResult } from "@/lib/stellar/wallet";
 import { xlmToStroops } from "@/lib/domain/format";
 import { canBet } from "@/lib/domain/round";
 import type { Round } from "@/lib/domain/round";
@@ -17,11 +17,12 @@ interface Props {
 }
 
 export function BetForm({ round, nowSec }: Props) {
-  const { connected, connect } = useWallet();
+  const { connected, connect, xlmBalance, refreshBalance } = useWallet();
   const [side, setSide] = useState<"Up" | "Down" | null>(null);
   const [amount, setAmount] = useState("");
   const [txState, setTxState] = useState<TxState>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [txResult, setTxResult] = useState<TxResult | null>(null);
 
   const open = canBet(round, nowSec);
 
@@ -30,15 +31,17 @@ export function BetForm({ round, nowSec }: Props) {
     if (!side || !amount || !open) return;
 
     setErrorMsg(null);
+    setTxResult(null);
 
     try {
       setTxState("simulating");
       const stroops = xlmToStroops(amount);
-      // signAndSend handles: simulate → sign → submit → confirm
-      setTxState("signing");
-      await bet(round.round_id, side, stroops);
+      setTxState("signing"); // wallet dialog opens here
+      const result = await bet(round.round_id, side, stroops);
+      setTxResult(result);
       setTxState("confirmed");
       setAmount("");
+      void refreshBalance(); // update XLM balance in header
     } catch (err) {
       setTxState("error");
       setErrorMsg(parseContractError(err));
@@ -53,16 +56,24 @@ export function BetForm({ round, nowSec }: Props) {
     );
   }
 
-  if (txState === "confirmed") {
+  if (txState === "confirmed" && txResult) {
     return (
-      <div className="rounded-lg border border-up/30 bg-up-dim/20 px-4 py-4 text-center">
-        <p className="text-up font-semibold">Position placed ✓</p>
-        <p className="mt-1 text-xs text-wick-muted">
+      <div className="rounded-lg border border-up/30 bg-up-dim/20 px-4 py-5 space-y-2">
+        <p className="font-semibold text-up text-center">Position placed ✓</p>
+        <p className="text-xs text-center text-wick-muted">
           {side === "Up" ? "▲ Above" : "▼ Below"} · {amount} XLM
         </p>
+        <a
+          href={txResult.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="block text-center text-xs text-phase-open underline hover:no-underline"
+        >
+          View on Stellar Expert →
+        </a>
         <button
           onClick={() => { setTxState("idle"); setSide(null); }}
-          className="mt-3 text-xs text-wick-muted underline hover:text-white"
+          className="block w-full text-center text-xs text-wick-muted underline hover:text-white mt-1"
         >
           Place another
         </button>
@@ -104,19 +115,34 @@ export function BetForm({ round, nowSec }: Props) {
         ))}
       </div>
 
-      {/* Amount input */}
-      <div className="flex items-center gap-2 rounded-lg border border-wick-border bg-wick-bg px-3 py-2 focus-within:border-white/30">
-        <input
-          type="number"
-          min={MIN_BET_XLM}
-          step="any"
-          placeholder={`Min ${MIN_BET_XLM} XLM`}
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          disabled={busy}
-          className="flex-1 bg-transparent text-white placeholder:text-wick-muted focus:outline-none disabled:opacity-40"
-        />
-        <span className="text-sm text-wick-muted">XLM</span>
+      {/* Amount + balance hint */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-2 rounded-lg border border-wick-border bg-wick-bg px-3 py-2 focus-within:border-white/30">
+          <input
+            type="number"
+            min={MIN_BET_XLM}
+            step="any"
+            placeholder={`Min ${MIN_BET_XLM} XLM`}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            disabled={busy}
+            className="flex-1 bg-transparent text-white placeholder:text-wick-muted focus:outline-none disabled:opacity-40"
+          />
+          <span className="text-sm text-wick-muted">XLM</span>
+        </div>
+        {xlmBalance && (
+          <p className="text-xs text-wick-muted text-right">
+            Balance:{" "}
+            <button
+              type="button"
+              className="text-white hover:underline"
+              onClick={() => setAmount((parseFloat(xlmBalance) * 0.9).toFixed(2))}
+              title="Use 90% of balance"
+            >
+              {parseFloat(xlmBalance).toLocaleString("en-US", { maximumFractionDigits: 2 })} XLM
+            </button>
+          </p>
+        )}
       </div>
 
       {/* Error */}
@@ -129,13 +155,16 @@ export function BetForm({ round, nowSec }: Props) {
           disabled={!side || !amount || busy}
           className="w-full rounded-lg bg-phase-open py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-40"
         >
+          {busy && (
+            <span className="mr-2 inline-block h-3 w-3 animate-spin rounded-full border border-white border-t-transparent" />
+          )}
           {stateLabel[txState]}
         </button>
       ) : (
         <button
           type="button"
           onClick={() => void connect()}
-          className="w-full rounded-lg border border-wick-border py-2.5 text-sm font-semibold text-wick-muted transition-colors hover:text-white"
+          className="w-full rounded-lg border border-phase-open py-2.5 text-sm font-semibold text-phase-open transition-colors hover:bg-phase-open hover:text-white"
         >
           Connect wallet to bet
         </button>
