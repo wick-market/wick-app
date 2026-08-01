@@ -157,19 +157,33 @@ async function mockDelay(ms = 1500): Promise<TxResult> {
 }
 
 /**
- * Place a bet. Opens the wallet signing dialog when not in mock mode.
+ * Resolve the connected wallet address, or null if no wallet is active.
+ * Used to decide whether to run a real transaction or the mock path.
+ */
+async function resolveAddress(): Promise<string | null> {
+  try {
+    const kit = await getKit();
+    const { address } = await kit.getAddress();
+    return address || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Place a bet.
+ * - Wallet connected → signs a real Soroban transaction (always, even in mock mode)
+ * - No wallet → mock delay (UI development only)
  */
 export async function bet(
   roundId: string,
   side: "Up" | "Down",
   amountStroops: bigint
 ): Promise<TxResult> {
-  if (IS_MOCK) return mockDelay();
+  const address = await resolveAddress();
+  if (!address) return mockDelay();
 
-  const kit = await getKit();
-  const { address } = await kit.getAddress();
   const client = buildClient(address);
-
   const contractSide: Side =
     side === "Up" ? { tag: "Up", values: undefined } : { tag: "Down", values: undefined };
 
@@ -186,15 +200,15 @@ export async function bet(
 }
 
 /**
- * Claim winnings for one round. Opens the wallet signing dialog.
+ * Claim winnings for one round.
+ * - Wallet connected → real transaction
+ * - No wallet → mock delay
  */
 export async function claim(roundId: string): Promise<TxResult> {
-  if (IS_MOCK) return mockDelay();
+  const address = await resolveAddress();
+  if (!address) return mockDelay();
 
-  const kit = await getKit();
-  const { address } = await kit.getAddress();
   const client = buildClient(address);
-
   const tx = await client.claim({
     user: address,
     round_id: BigInt(roundId),
@@ -206,15 +220,15 @@ export async function claim(roundId: string): Promise<TxResult> {
 }
 
 /**
- * Batch claim up to 20 rounds. Opens the wallet signing dialog once.
+ * Batch claim up to 20 rounds in one transaction.
+ * - Wallet connected → real transaction
+ * - No wallet → mock delay
  */
 export async function claimMany(roundIds: string[]): Promise<TxResult> {
-  if (IS_MOCK) return mockDelay();
+  const address = await resolveAddress();
+  if (!address) return mockDelay();
 
-  const kit = await getKit();
-  const { address } = await kit.getAddress();
   const client = buildClient(address);
-
   const tx = await client.claim_many({
     user: address,
     round_ids: roundIds.map(BigInt),
