@@ -15,7 +15,7 @@ import { Keypair, Networks, rpc } from "@stellar/stellar-sdk";
 export type { Round, Position, Config, Side };
 
 // Demo contract: test oracle, 60s rounds, 45s betting window
-export const CONTRACT_ID = "CBJDHRRZ7G62S5ZGDEM53CIHRS3OMKCGOHM27I5XYBD2ANNVNIAJHTX2";
+export const CONTRACT_ID = "CAEBJPGQZHNHQIAOXBIWRWRVYJZ3L4DHDVSOVOTHDWN7CQY5FEFIURBJ";
 export const RPC_URL = "https://soroban-testnet.stellar.org";
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
 export const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx";
