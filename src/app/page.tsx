@@ -311,7 +311,24 @@ export default function XlmMarket() {
             <span className="text-sm text-zinc-500">Reading from chain…</span>
           </div>
         ) : !round ? (
-          <p className="text-center text-zinc-500 py-8">No active round — keeper is opening one</p>
+          <div className="py-8 text-center space-y-2">
+            <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500 mx-auto" />
+            <p className="text-zinc-400 font-medium">Waiting for next round</p>
+            <p className="text-zinc-600 text-xs">
+              The Reflector oracle updates every 5 minutes.
+              A new round opens automatically after the next price tick.
+            </p>
+            {/* Show when the next oracle tick is expected */}
+            {(() => {
+              const nextTick = Math.ceil(nowSec / 300) * 300;
+              const secsToTick = Math.max(0, nextTick - nowSec);
+              return secsToTick > 0 ? (
+                <p className="text-zinc-500 text-sm font-mono">
+                  Next tick in {formatCountdown(secsToTick)}
+                </p>
+              ) : null;
+            })()}
+          </div>
         ) : (
           <>
             {/* Strike + phase */}
@@ -406,6 +423,22 @@ export default function XlmMarket() {
           </>
         )}
       </div>
+
+      {/* Next round banner when current is settled */}
+      {round && (phase === "Settled" || phase === "Void") && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-center space-y-1">
+          <p className="text-zinc-400 text-sm">Next round opens after oracle update</p>
+          {(() => {
+            const nextTick = Math.ceil(nowSec / 300) * 300;
+            const secs = Math.max(0, nextTick - nowSec);
+            return secs > 0 ? (
+              <p className="text-zinc-500 font-mono text-sm">~{formatCountdown(secs)}</p>
+            ) : (
+              <p className="text-zinc-500 text-xs animate-pulse">Opening now…</p>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Bet form */}
       {round && phase === "Open" && (
