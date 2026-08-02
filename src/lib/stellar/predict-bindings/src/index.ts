@@ -34,7 +34,7 @@ if (typeof window !== "undefined") {
 export const networks = {
   testnet: {
     networkPassphrase: "Test SDF Network ; September 2015",
-    contractId: "CB6PWNWBO5BTWVAYFWUZ4PG3X6LHSZNBUQG7A6AK2TNCMKY72LRQIPCC",
+    contractId: "CB3UZK2OQZ3CNJ2R64N7NI3EW6MEKFJDC5TTXYEBY5BL2EL2CLPNHDD2",
   }
 } as const
 
@@ -60,11 +60,20 @@ export const Errors = {
 
 
 export interface Round {
-  id: u64;
   /**
- * strike_ts + lock_offset. No bets after this.
+ * Sum of (amount × time_remaining) for all Above bettors.
  */
-lock_ts: u64;
+boosted_above: i128;
+  /**
+ * Sum of (amount × time_remaining) for all Below bettors.
+ */
+boosted_below: i128;
+  /**
+ * boosted_above + boosted_below — global denominator for loser refunds.
+ */
+global_boosted: i128;
+  id: u64;
+  lock_ts: u64;
   outcome: Outcome;
   /**
  * Total XLM staked on Above (stroops).
@@ -75,59 +84,27 @@ pool_above: i128;
  */
 pool_below: i128;
   /**
- * Settlement price. Zero until settled.
+ * Settlement price from oracle. Zero until settled.
  */
 settle_price: i128;
-  /**
- * strike_ts + ORACLE_INTERVAL (300s). Settlement reads price at this ts.
- */
-settle_ts: u64;
-  /**
- * Time-weighted shares issued on Above side.
- */
-shares_above: i128;
-  /**
- * Time-weighted shares issued on Below side.
- */
-shares_below: i128;
+  settle_ts: u64;
   status: Status;
   /**
- * XLM/USD oracle price at open (14 decimals). Strike bettors predict against.
+ * XLM/USD oracle price at open — the reference to predict against.
  */
 strike: i128;
-  /**
- * Oracle's own timestamp for the strike price — NOT ledger time.
- */
-strike_ts: u64;
+  strike_ts: u64;
 }
 
 
 export interface Config {
   admin: string;
-  /**
- * Fee in basis points (e.g. 200 = 2%). Applied to losing pool on payout.
- */
-fee_bps: u32;
-  /**
- * Seconds after strike_ts before betting closes (default 180, min 90).
- */
-lock_offset: u64;
-  /**
- * Minimum bet in stroops (default 100_000_000 = 10 XLM).
- */
-min_bet: i128;
-  /**
- * Reflector oracle contract.
- */
-oracle: string;
-  /**
- * oracle.decimals() — for frontend display normalisation.
- */
-oracle_decimals: u32;
-  /**
- * XLM Stellar Asset Contract.
- */
-token: string;
+  fee_bps: u32;
+  lock_offset: u64;
+  min_bet: i128;
+  oracle: string;
+  oracle_decimals: u32;
+  token: string;
 }
 
 export type Status = {tag: "Open", values: void} | {tag: "Locked", values: void} | {tag: "Settled", values: void};
@@ -137,15 +114,16 @@ export type Outcome = {tag: "Above", values: void} | {tag: "Below", values: void
 
 export interface Position {
   /**
- * XLM staked in stroops.
+ * Stroops staked.
  */
 amount: i128;
+  /**
+ * Time-weighted shares: amount × (lock_ts − bet_ts).
+ * Larger for early bettors — determines Ninetails bonus share.
+ */
+boosted: i128;
   claimed: boolean;
   round_id: u64;
-  /**
- * Time-weighted shares received. Earlier = more shares per XLM.
- */
-shares: i128;
   side: Side;
 }
 
@@ -243,11 +221,11 @@ export class Client extends ContractClient {
     super(
       new ContractSpec([ "AAAAAgAAAAAAAAAAAAAABFNpZGUAAAACAAAAAAAAAAAAAAAFQWJvdmUAAAAAAAAAAAAAAAAAAAVCZWxvdwAAAA==",
         "AAAABAAAAAAAAAAAAAAABUVycm9yAAAAAAAADwAAAAAAAAASQWxyZWFkeUluaXRpYWxpemVkAAAAAAABAAAAAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAgAAAAAAAAANUm91bmROb3RGb3VuZAAAAAAAAAMAAAAAAAAAC1JvdW5kTG9ja2VkAAAAAAQAAAAAAAAAD1JvdW5kTm90U2V0dGxlZAAAAAAFAAAAAAAAAA5BbHJlYWR5U2V0dGxlZAAAAAAABgAAAAAAAAAIVG9vRWFybHkAAAAHAAAAAAAAAAtCZXRUb29TbWFsbAAAAAAIAAAAAAAAAApBbHJlYWR5QmV0AAAAAAAJAAAAAAAAAA5Ob3RoaW5nVG9DbGFpbQAAAAAACgAAAAAAAAAKRmVlVG9vSGlnaAAAAAAACwAAAAAAAAASTG9ja09mZnNldFRvb1NtYWxsAAAAAAAMAAAAAAAAAAxVbmF1dGhvcml6ZWQAAAANAAAAAAAAAA5EdXBsaWNhdGVSb3VuZAAAAAAADgAAAAAAAAANT3JhY2xlTm9QcmljZQAAAAAAAA8=",
-        "AAAAAQAAAAAAAAAAAAAABVJvdW5kAAAAAAAADAAAAAAAAAACaWQAAAAAAAYAAAAsc3RyaWtlX3RzICsgbG9ja19vZmZzZXQuIE5vIGJldHMgYWZ0ZXIgdGhpcy4AAAAHbG9ja190cwAAAAAGAAAAAAAAAAdvdXRjb21lAAAAB9AAAAAHT3V0Y29tZQAAAAAkVG90YWwgWExNIHN0YWtlZCBvbiBBYm92ZSAoc3Ryb29wcykuAAAACnBvb2xfYWJvdmUAAAAAAAsAAAAkVG90YWwgWExNIHN0YWtlZCBvbiBCZWxvdyAoc3Ryb29wcykuAAAACnBvb2xfYmVsb3cAAAAAAAsAAAAlU2V0dGxlbWVudCBwcmljZS4gWmVybyB1bnRpbCBzZXR0bGVkLgAAAAAAAAxzZXR0bGVfcHJpY2UAAAALAAAARnN0cmlrZV90cyArIE9SQUNMRV9JTlRFUlZBTCAoMzAwcykuIFNldHRsZW1lbnQgcmVhZHMgcHJpY2UgYXQgdGhpcyB0cy4AAAAAAAlzZXR0bGVfdHMAAAAAAAAGAAAAKlRpbWUtd2VpZ2h0ZWQgc2hhcmVzIGlzc3VlZCBvbiBBYm92ZSBzaWRlLgAAAAAADHNoYXJlc19hYm92ZQAAAAsAAAAqVGltZS13ZWlnaHRlZCBzaGFyZXMgaXNzdWVkIG9uIEJlbG93IHNpZGUuAAAAAAAMc2hhcmVzX2JlbG93AAAACwAAAAAAAAAGc3RhdHVzAAAAAAfQAAAABlN0YXR1cwAAAAAAS1hMTS9VU0Qgb3JhY2xlIHByaWNlIGF0IG9wZW4gKDE0IGRlY2ltYWxzKS4gU3RyaWtlIGJldHRvcnMgcHJlZGljdCBhZ2FpbnN0LgAAAAAGc3RyaWtlAAAAAAALAAAAQE9yYWNsZSdzIG93biB0aW1lc3RhbXAgZm9yIHRoZSBzdHJpa2UgcHJpY2Ug4oCUIE5PVCBsZWRnZXIgdGltZS4AAAAJc3RyaWtlX3RzAAAAAAAABg==",
-        "AAAAAQAAAAAAAAAAAAAABkNvbmZpZwAAAAAABwAAAAAAAAAFYWRtaW4AAAAAAAATAAAARkZlZSBpbiBiYXNpcyBwb2ludHMgKGUuZy4gMjAwID0gMiUpLiBBcHBsaWVkIHRvIGxvc2luZyBwb29sIG9uIHBheW91dC4AAAAAAAdmZWVfYnBzAAAAAAQAAABEU2Vjb25kcyBhZnRlciBzdHJpa2VfdHMgYmVmb3JlIGJldHRpbmcgY2xvc2VzIChkZWZhdWx0IDE4MCwgbWluIDkwKS4AAAALbG9ja19vZmZzZXQAAAAABgAAADZNaW5pbXVtIGJldCBpbiBzdHJvb3BzIChkZWZhdWx0IDEwMF8wMDBfMDAwID0gMTAgWExNKS4AAAAAAAdtaW5fYmV0AAAAAAsAAAAaUmVmbGVjdG9yIG9yYWNsZSBjb250cmFjdC4AAAAAAAZvcmFjbGUAAAAAABMAAAA5b3JhY2xlLmRlY2ltYWxzKCkg4oCUIGZvciBmcm9udGVuZCBkaXNwbGF5IG5vcm1hbGlzYXRpb24uAAAAAAAAD29yYWNsZV9kZWNpbWFscwAAAAAEAAAAG1hMTSBTdGVsbGFyIEFzc2V0IENvbnRyYWN0LgAAAAAFdG9rZW4AAAAAAAAT",
+        "AAAAAQAAAAAAAAAAAAAABVJvdW5kAAAAAAAADQAAADhTdW0gb2YgKGFtb3VudCDDlyB0aW1lX3JlbWFpbmluZykgZm9yIGFsbCBBYm92ZSBiZXR0b3JzLgAAAA1ib29zdGVkX2Fib3ZlAAAAAAAACwAAADhTdW0gb2YgKGFtb3VudCDDlyB0aW1lX3JlbWFpbmluZykgZm9yIGFsbCBCZWxvdyBiZXR0b3JzLgAAAA1ib29zdGVkX2JlbG93AAAAAAAACwAAAEdib29zdGVkX2Fib3ZlICsgYm9vc3RlZF9iZWxvdyDigJQgZ2xvYmFsIGRlbm9taW5hdG9yIGZvciBsb3NlciByZWZ1bmRzLgAAAAAOZ2xvYmFsX2Jvb3N0ZWQAAAAAAAsAAAAAAAAAAmlkAAAAAAAGAAAAAAAAAAdsb2NrX3RzAAAAAAYAAAAAAAAAB291dGNvbWUAAAAH0AAAAAdPdXRjb21lAAAAACRUb3RhbCBYTE0gc3Rha2VkIG9uIEFib3ZlIChzdHJvb3BzKS4AAAAKcG9vbF9hYm92ZQAAAAAACwAAACRUb3RhbCBYTE0gc3Rha2VkIG9uIEJlbG93IChzdHJvb3BzKS4AAAAKcG9vbF9iZWxvdwAAAAAACwAAADFTZXR0bGVtZW50IHByaWNlIGZyb20gb3JhY2xlLiBaZXJvIHVudGlsIHNldHRsZWQuAAAAAAAADHNldHRsZV9wcmljZQAAAAsAAAAAAAAACXNldHRsZV90cwAAAAAAAAYAAAAAAAAABnN0YXR1cwAAAAAH0AAAAAZTdGF0dXMAAAAAAEJYTE0vVVNEIG9yYWNsZSBwcmljZSBhdCBvcGVuIOKAlCB0aGUgcmVmZXJlbmNlIHRvIHByZWRpY3QgYWdhaW5zdC4AAAAAAAZzdHJpa2UAAAAAAAsAAAAAAAAACXN0cmlrZV90cwAAAAAAAAY=",
+        "AAAAAQAAAAAAAAAAAAAABkNvbmZpZwAAAAAABwAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAAAAAAdmZWVfYnBzAAAAAAQAAAAAAAAAC2xvY2tfb2Zmc2V0AAAAAAYAAAAAAAAAB21pbl9iZXQAAAAACwAAAAAAAAAGb3JhY2xlAAAAAAATAAAAAAAAAA9vcmFjbGVfZGVjaW1hbHMAAAAABAAAAAAAAAAFdG9rZW4AAAAAAAAT",
         "AAAAAgAAAAAAAAAAAAAABlN0YXR1cwAAAAAAAwAAAAAAAAAAAAAABE9wZW4AAAAAAAAAAAAAAAZMb2NrZWQAAAAAAAAAAAAAAAAAB1NldHRsZWQA",
         "AAAAAgAAAAAAAAAAAAAAB091dGNvbWUAAAAAAwAAAAAAAAAAAAAABUFib3ZlAAAAAAAAAAAAAAAAAAAFQmVsb3cAAAAAAAAAAAAAAAAAAARWb2lk",
-        "AAAAAQAAAAAAAAAAAAAACFBvc2l0aW9uAAAABQAAABZYTE0gc3Rha2VkIGluIHN0cm9vcHMuAAAAAAAGYW1vdW50AAAAAAALAAAAAAAAAAdjbGFpbWVkAAAAAAEAAAAAAAAACHJvdW5kX2lkAAAABgAAAD1UaW1lLXdlaWdodGVkIHNoYXJlcyByZWNlaXZlZC4gRWFybGllciA9IG1vcmUgc2hhcmVzIHBlciBYTE0uAAAAAAAABnNoYXJlcwAAAAAACwAAAAAAAAAEc2lkZQAAB9AAAAAEU2lkZQ==",
+        "AAAAAQAAAAAAAAAAAAAACFBvc2l0aW9uAAAABQAAAA9TdHJvb3BzIHN0YWtlZC4AAAAABmFtb3VudAAAAAAACwAAAHRUaW1lLXdlaWdodGVkIHNoYXJlczogYW1vdW50IMOXIChsb2NrX3RzIOKIkiBiZXRfdHMpLgpMYXJnZXIgZm9yIGVhcmx5IGJldHRvcnMg4oCUIGRldGVybWluZXMgTmluZXRhaWxzIGJvbnVzIHNoYXJlLgAAAAdib29zdGVkAAAAAAsAAAAAAAAAB2NsYWltZWQAAAAAAQAAAAAAAAAIcm91bmRfaWQAAAAGAAAAAAAAAARzaWRlAAAH0AAAAARTaWRl",
         "AAAAAQAAAAAAAAAAAAAACVByaWNlRGF0YQAAAAAAAAIAAAAAAAAABXByaWNlAAAAAAAACwAAAAAAAAAJdGltZXN0YW1wAAAAAAAABg==",
         "AAAAAAAAAAAAAAAFY2xhaW0AAAAAAAACAAAAAAAAAAR1c2VyAAAAEwAAAAAAAAAIcm91bmRfaWQAAAAGAAAAAQAAAAs=",
         "AAAAAgAAAAAAAAAAAAAAC09yYWNsZUFzc2V0AAAAAAIAAAABAAAAAAAAAAdTdGVsbGFyAAAAAAEAAAATAAAAAQAAAAAAAAAFT3RoZXIAAAAAAAABAAAAEQ==",

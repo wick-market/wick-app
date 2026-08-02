@@ -14,7 +14,7 @@ import { Keypair, Networks, rpc } from "@stellar/stellar-sdk";
 
 export type { Round, Position, Config, Side };
 
-export const CONTRACT_ID = "CB6PWNWBO5BTWVAYFWUZ4PG3X6LHSZNBUQG7A6AK2TNCMKY72LRQIPCC";
+export const CONTRACT_ID = "CB3UZK2OQZ3CNJ2R64N7NI3EW6MEKFJDC5TTXYEBY5BL2EL2CLPNHDD2";
 export const RPC_URL = "https://soroban-testnet.stellar.org";
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
 export const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx";
@@ -187,30 +187,47 @@ export function xlmToStroops(xlm: string): bigint {
   return BigInt(whole) * STROOP_DIVISOR + BigInt(frac.slice(0, 7).padEnd(7, "0"));
 }
 
-/** Time-weighted shares: scale = 1000 → 500 over the betting window */
-export function computeShares(
-  amount: bigint,
-  nowSec: number,
-  strikeTsSec: number,
-  lockTsSec: number
-): bigint {
-  const window = BigInt(lockTsSec - strikeTsSec);
-  if (window <= 0n) return amount;
-  const elapsed = BigInt(Math.max(0, Math.min(nowSec - strikeTsSec, lockTsSec - strikeTsSec)));
-  const scale = 1000n - (elapsed * 500n / window); // 1000 → 500
-  return (amount * scale) / 1000n;
+/** Ninetails boosted shares: amount × seconds remaining until lock.
+ * Bet at open → max boost. Bet just before lock → almost zero boost.
+ */
+export function computeBoosted(amount: bigint, nowSec: number, lockTsSec: number): bigint {
+  const remaining = BigInt(Math.max(0, lockTsSec - nowSec));
+  return amount * remaining;
 }
 
-/** Payout for a winner: shares_i × distributed / total_winning_shares */
-export function computePayout(
-  shares: bigint,
-  totalWinningShares: bigint,
-  losingPool: bigint,
-  feeBps: bigint
+/** Winner payout (9lives Ninetails):
+ *   base         = staked amount (1:1 guarantee — always get your stake back)
+ *   winner_bonus = 70% of distributed × user_side_boosted / total_side_boosted
+ *   early_bonus  = 30% of distributed × user_boosted / global_boosted
+ */
+export function computeWinnerPayout(
+  staked: bigint,
+  distributed: bigint,
+  userBoosted: bigint,
+  sideBoosted: bigint,
+  globalBoosted: bigint
 ): bigint {
-  if (shares === 0n || totalWinningShares === 0n || losingPool === 0n) return 0n;
-  const distributed = (losingPool * (10_000n - feeBps)) / 10_000n;
-  return (shares * distributed) / totalWinningShares;
+  if (distributed === 0n) return staked;
+  const winnerShare = sideBoosted > 0n
+    ? (distributed * 7_000n / 10_000n * userBoosted) / sideBoosted
+    : 0n;
+  const refundShare = globalBoosted > 0n
+    ? (distributed * 3_000n / 10_000n * userBoosted) / globalBoosted
+    : 0n;
+  return staked + winnerShare + refundShare;
+}
+
+/** Loser refund (Ninetails):
+ *   30% of distributed × user_boosted / global_boosted
+ *   Even losers get something back proportional to how early they bet.
+ */
+export function computeLoserPayout(
+  distributed: bigint,
+  userBoosted: bigint,
+  globalBoosted: bigint
+): bigint {
+  if (globalBoosted === 0n || distributed === 0n) return 0n;
+  return (distributed * 3_000n / 10_000n * userBoosted) / globalBoosted;
 }
 
 /** Wallet balance from Horizon */

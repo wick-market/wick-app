@@ -15,8 +15,9 @@ import {
   formatOraclePrice,
   formatXlm,
   xlmToStroops,
-  computeShares,
-  computePayout,
+  computeBoosted,
+  computeWinnerPayout,
+  computeLoserPayout,
   type Round,
   type Position,
   type Config,
@@ -195,7 +196,7 @@ export default function XlmMarket() {
   // Multiples preview (time-weighted)
   const previewShares =
     round && amount && canBet
-      ? computeShares(xlmToStroops(amount), nowSec, Number(round.strike_ts), Number(round.lock_ts))
+      ? computeBoosted(xlmToStroops(amount), nowSec, Number(round.lock_ts))
       : null;
 
   async function handleBet(e: React.FormEvent) {
@@ -461,7 +462,7 @@ export default function XlmMarket() {
                 </span>
                 {" · "}
                 {formatXlm(position.amount)} ·{" "}
-                <span className="text-zinc-400">{position.shares.toString()} shares</span>
+                <span className="text-zinc-400">boost {(Number(position.boosted) / 1e7).toFixed(0)}</span>
               </p>
             </div>
           ) : (
@@ -517,12 +518,14 @@ export default function XlmMarket() {
               {previewShares && amount && round && (
                 <div className="rounded-lg bg-zinc-800 px-3 py-2 text-xs space-y-1">
                   <p className="text-zinc-400">
-                    Shares you receive:{" "}
-                    <span className="text-white font-medium">{previewShares.toString()}</span>
-                    <span className="text-zinc-600"> (out of max {xlmToStroops(amount).toString()})</span>
+                    Your boost:{" "}
+                    <span className="text-white font-medium">
+                      {(Number(previewShares) / 1e7).toFixed(0)}
+                    </span>
+                    <span className="text-zinc-600"> (max at open, shrinks every second)</span>
                   </p>
                   <p className="text-zinc-600">
-                    Betting early gives more shares → larger share of the payout pool.
+                    Bet now for best odds. Even if you lose, early bettors get a partial refund.
                   </p>
                 </div>
               )}
@@ -570,7 +573,7 @@ export default function XlmMarket() {
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-3">
           <h2 className="font-semibold text-white">Your position</h2>
           {(() => {
-            const myShares = position.shares;
+            const myShares = position.boosted;
             const outcome = round.outcome.tag;
             const isVoid = outcome === "Void";
             const isWinner =
@@ -580,10 +583,17 @@ export default function XlmMarket() {
             let payout = 0n;
             if (isVoid) {
               payout = position.amount;
-            } else if (isWinner) {
-              const winShares = outcome === "Above" ? round.shares_above : round.shares_below;
+            } else {
               const losingPool = outcome === "Above" ? round.pool_below : round.pool_above;
-              payout = computePayout(myShares, winShares, losingPool, feeBps);
+              const fee = losingPool * feeBps / 10_000n;
+              const distributed = losingPool - fee;
+              if (isWinner) {
+                const sideBoosted = outcome === "Above" ? round.boosted_above : round.boosted_below;
+                payout = computeWinnerPayout(position.amount, distributed, myShares, sideBoosted, round.global_boosted);
+              } else {
+                // Losers get a partial Ninetails refund proportional to how early they bet
+                payout = computeLoserPayout(distributed, myShares, round.global_boosted);
+              }
             }
 
             return (
@@ -600,8 +610,8 @@ export default function XlmMarket() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-400">Result</span>
-                  <span className={isVoid ? "text-zinc-400" : isWinner ? "text-green-400" : "text-red-400"}>
-                    {isVoid ? "Void — refund" : isWinner ? "Won" : "Lost"}
+                  <span className={isVoid ? "text-zinc-400" : isWinner ? "text-green-400" : "text-amber-400"}>
+                    {isVoid ? "Void — full refund" : isWinner ? "Won" : "Lost — partial refund"}
                   </span>
                 </div>
                 {payout > 0n && (
