@@ -287,18 +287,57 @@ export default function MarketPage() {
           </div>
         )}
 
-        {/* Waiting for next round */}
+        {/* Between rounds — show price and last result */}
         {!loading && (!round || phase === "Settled" || phase === "Void") && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 text-center space-y-2">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500 mx-auto" />
-            <p className="text-zinc-400 font-medium">Waiting for next round</p>
-            <p className="text-zinc-600 text-xs">
-              Oracle updates every 5 minutes.{" "}
-              {(() => {
-                const next = Math.ceil(now / 300) * 300;
-                const s = Math.max(0, next - now);
-                return s > 0 ? `Next tick in ${fmt(s)}` : "Opening now…";
-              })()}
+          <div className="space-y-3">
+            {/* Current price card */}
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">XLM / USD · Live</p>
+                  <p className="text-4xl font-bold text-white font-mono">
+                    ${livePrice ?? "—"}
+                  </p>
+                </div>
+                <div className="text-right space-y-1">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500 ml-auto" />
+                  <p className="text-xs text-zinc-500">Next round opening…</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Last round result */}
+            {round && (phase === "Settled" || phase === "Void") && (
+              <div className={`rounded-xl border p-4 ${
+                round.outcome.tag === "Above" ? "border-green-500/20 bg-green-500/5"
+                : round.outcome.tag === "Below" ? "border-red-500/20 bg-red-500/5"
+                : "border-zinc-800 bg-zinc-900"
+              }`}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="text-xs text-zinc-500 mb-1">Last round #{roundId?.toString()}</p>
+                    <p className={`font-bold ${
+                      round.outcome.tag === "Above" ? "text-green-400"
+                      : round.outcome.tag === "Below" ? "text-red-400"
+                      : "text-zinc-400"
+                    }`}>
+                      {round.outcome.tag === "Above" ? "▲ ABOVE won"
+                        : round.outcome.tag === "Below" ? "▼ BELOW won"
+                        : "VOID — refunded"}
+                    </p>
+                  </div>
+                  {round.settle_price > 0n && (
+                    <div className="text-right">
+                      <p className="text-xs text-zinc-500">Settled at</p>
+                      <p className="font-mono text-white">${(Number(round.settle_price) / 1e14).toFixed(4)}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <p className="text-center text-xs text-zinc-600">
+              Run the demo keeper to start automatic 1-minute rounds
             </p>
           </div>
         )}
