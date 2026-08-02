@@ -1,141 +1,276 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useWallet } from "@/contexts/WalletContext";
-import { api, type UserPosition, type ClaimablePosition } from "@/lib/api/client";
-import { PositionRow } from "@/components/positions/PositionRow";
-import { ClaimButton } from "@/components/positions/ClaimButton";
-import { ExpiryCountdown } from "@/components/positions/ExpiryCountdown";
-import { formatXlm } from "@/lib/domain/format";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  getCurrentRoundId,
+  getRound,
+  getPosition,
+  getXlmBalance,
+  claim,
+  parseError,
+  formatOraclePrice,
+  formatXlm,
+  computeWinnerPayout,
+  computeLoserPayout,
+  type Round,
+  type Position,
+  type TxResult,
+} from "@/lib/stellar/predict";
+import { openConnectModal, getAddress, disconnect } from "@/lib/stellar/wallet";
 
-// In mock mode we show fixture positions for this address without requiring
-// the user to have a wallet installed.
-const MOCK_ADDRESS = "GBGCQGIFNIPDRZ6GN5CFSW5T5KCTGLXDY5HD7ISY6EBDVU7Q2YFBDXUJ";
-const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true";
-
-export default function PositionsPage() {
-  const { address, connected, connect } = useWallet();
-  const [positions, setPositions] = useState<UserPosition[]>([]);
-  const [claimable, setClaimable] = useState<ClaimablePosition[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Use real address when connected, fall back to mock address in mock mode
-  const lookupAddress = address ?? (IS_MOCK ? MOCK_ADDRESS : null);
-
+function useWallet() {
+  const [address, setAddress] = useState<string | null>(null);
+  const [balance, setBalance] = useState<string | null>(null);
+  const refresh = useCallback(async (addr: string) => {
+    const b = await getXlmBalance(addr); setBalance(b);
+  }, []);
   useEffect(() => {
-    if (!lookupAddress) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    void Promise.allSettled([
-      api.getUserPositions(lookupAddress).then(setPositions),
-      api.getUserClaimable(lookupAddress).then(setClaimable),
-    ]).finally(() => setLoading(false));
-  }, [lookupAddress]);
+    getAddress().then((a) => { if (a) { setAddress(a); void refresh(a); } });
+  }, [refresh]);
+  const connect = useCallback(async () => {
+    await openConnectModal((a) => { setAddress(a); void refresh(a); });
+  }, [refresh]);
+  const doDisconnect = useCallback(async () => {
+    await disconnect(); setAddress(null); setBalance(null);
+  }, []);
+  return { address, balance, connect, disconnect: doDisconnect, refresh };
+}
 
-  const totalClaimable = claimable.reduce((sum, c) => sum + BigInt(c.claimable), 0n);
-
+function Header({ wallet }: { wallet: ReturnType<typeof useWallet> }) {
   return (
-    <div className="mx-auto max-w-2xl space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Positions</h1>
-        {!connected && (
-          <button
-            onClick={() => void connect()}
-            className="rounded-lg bg-phase-open px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-          >
-            Connect wallet
+    <header className="sticky top-0 z-50 border-b border-zinc-800 bg-zinc-950/95 backdrop-blur">
+      <div className="mx-auto flex max-w-xl items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-5">
+          <Link href="/" className="flex items-center gap-2">
+            <span className="text-xl font-black tracking-tight text-white">Wick</span>
+            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-400">TESTNET</span>
+          </Link>
+          <nav className="flex gap-3 text-sm text-zinc-500">
+            <Link href="/" className="hover:text-white transition-colors">Markets</Link>
+            <Link href="/positions" className="text-white">Positions</Link>
+          </nav>
+        </div>
+        {wallet.address ? (
+          <div className="flex items-center gap-2">
+            {wallet.balance && (
+              <span className="text-sm text-zinc-400">
+                <span className="text-white font-medium">{parseFloat(wallet.balance).toFixed(2)}</span> XLM
+              </span>
+            )}
+            <button onClick={() => void wallet.disconnect()}
+              className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-400 hover:text-white transition-colors">
+              {wallet.address.slice(0, 5)}…{wallet.address.slice(-4)}
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => void wallet.connect()}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors">
+            Connect Wallet
           </button>
         )}
       </div>
+    </header>
+  );
+}
 
-      {/* No wallet, no mock — prompt to connect */}
-      {!lookupAddress && (
-        <div className="flex flex-col items-center gap-4 py-20 text-center">
-          <p className="text-white">Connect your wallet to see positions.</p>
-          <button
-            onClick={() => void connect()}
-            className="rounded-lg bg-phase-open px-6 py-2.5 text-sm font-semibold text-white hover:opacity-90"
-          >
-            Connect wallet
-          </button>
-        </div>
-      )}
+interface PositionEntry {
+  roundId: bigint;
+  round: Round;
+  position: Position;
+}
 
-      {lookupAddress && loading && (
-        <div className="flex justify-center py-20">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-wick-border border-t-phase-open" />
-        </div>
-      )}
+export default function PositionsPage() {
+  const wallet = useWallet();
+  const [entries, setEntries] = useState<PositionEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [claimStates, setClaimStates] = useState<Record<string, "idle" | "signing" | "done" | "error">>({});
+  const [claimResults, setClaimResults] = useState<Record<string, TxResult>>({});
+  const [claimErrors, setClaimErrors] = useState<Record<string, string>>({});
 
-      {lookupAddress && !loading && (
-        <>
-          {/* Claimable banner */}
-          {claimable.length > 0 && (
-            <div className="rounded-xl border border-up/30 bg-up-dim/20 p-5 space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <h2 className="font-semibold text-up">Claimable winnings</h2>
-                  <p className="text-2xl font-bold text-white mt-1">
-                    {formatXlm(totalClaimable.toString())}
-                  </p>
-                  <p className="mt-1 text-xs text-phase-locked">
-                    ⚠ Expires 7 days after settlement — funds are permanently lost after that.
-                  </p>
-                </div>
-                <ClaimButton
-                  roundId={claimable[0]?.round_id ?? ""}
-                  payout={totalClaimable.toString()}
-                />
-              </div>
+  const load = useCallback(async (addr: string) => {
+    setLoading(true);
+    try {
+      const latestId = await getCurrentRoundId();
+      const found: PositionEntry[] = [];
+      // Scan last 20 rounds
+      const start = latestId > 20n ? latestId - 20n : 1n;
+      for (let id = latestId; id >= start; id--) {
+        const [round, pos] = await Promise.all([getRound(id), getPosition(id, addr)]);
+        if (round && pos) found.push({ roundId: id, round, position: pos });
+      }
+      setEntries(found);
+    } finally { setLoading(false); }
+  }, []);
 
-              <div className="divide-y divide-wick-border">
-                {claimable.map((c) => (
-                  <div key={c.round_id} className="flex items-center justify-between py-3 text-sm">
-                    <div className="space-y-0.5">
+  useEffect(() => {
+    if (wallet.address) void load(wallet.address);
+  }, [wallet.address, load]);
+
+  async function handleClaim(roundId: bigint) {
+    if (!wallet.address) return;
+    const key = roundId.toString();
+    setClaimStates((s) => ({ ...s, [key]: "signing" }));
+    try {
+      const res = await claim(wallet.address, roundId);
+      setClaimResults((s) => ({ ...s, [key]: res }));
+      setClaimStates((s) => ({ ...s, [key]: "done" }));
+      void wallet.refresh(wallet.address);
+      void load(wallet.address);
+    } catch (e) {
+      setClaimErrors((s) => ({ ...s, [key]: parseError(e) }));
+      setClaimStates((s) => ({ ...s, [key]: "error" }));
+    }
+  }
+
+  const FEE_BPS = 200n;
+
+  function calcPayout(entry: PositionEntry): bigint {
+    const { round, position } = entry;
+    if (round.status.tag !== "Settled") return 0n;
+    if (round.outcome.tag === "Void") return position.amount;
+    const isWinner =
+      (round.outcome.tag === "Above" && position.side.tag === "Above") ||
+      (round.outcome.tag === "Below" && position.side.tag === "Below");
+    const losingPool = round.outcome.tag === "Above" ? round.pool_below : round.pool_above;
+    const fee = losingPool * FEE_BPS / 10_000n;
+    const dist = losingPool - fee;
+    if (isWinner) {
+      const sideBoosted = round.outcome.tag === "Above" ? round.boosted_above : round.boosted_below;
+      return computeWinnerPayout(position.amount, dist, position.boosted, sideBoosted, round.global_boosted);
+    }
+    return computeLoserPayout(dist, position.boosted, round.global_boosted);
+  }
+
+  return (
+    <div className="min-h-screen bg-zinc-950">
+      <Header wallet={wallet} />
+      <div className="mx-auto max-w-xl px-4 py-6 space-y-4">
+        <h1 className="text-xl font-bold text-white">My Positions</h1>
+
+        {!wallet.address ? (
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-8 text-center space-y-3">
+            <p className="text-zinc-400">Connect your wallet to see positions</p>
+            <button onClick={() => void wallet.connect()}
+              className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white hover:bg-blue-500">
+              Connect Wallet
+            </button>
+          </div>
+        ) : loading ? (
+          <div className="flex justify-center py-12">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500" />
+          </div>
+        ) : entries.length === 0 ? (
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-8 text-center">
+            <p className="text-zinc-500">No positions yet</p>
+            <Link href="/" className="mt-3 block text-sm text-blue-400 underline">Place your first bet →</Link>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {entries.map((entry) => {
+              const { roundId, round, position } = entry;
+              const key = roundId.toString();
+              const claimState = claimStates[key] ?? "idle";
+              const payout = calcPayout(entry);
+              const isSettled = round.status.tag === "Settled";
+              const isVoid = round.outcome.tag === "Void";
+              const isWinner = isSettled && !isVoid && (
+                (round.outcome.tag === "Above" && position.side.tag === "Above") ||
+                (round.outcome.tag === "Below" && position.side.tag === "Below")
+              );
+              const isLoser = isSettled && !isVoid && !isWinner;
+              const canClaim = isSettled && !position.claimed && payout > 0n;
+
+              return (
+                <div key={key}
+                  className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+                  {/* Round info */}
+                  <div className="flex items-start justify-between">
+                    <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-white">{c.asset}</span>
-                        <span
-                          className={`text-xs font-semibold ${
-                            c.side === "Up" ? "text-up-text" : "text-down-text"
-                          }`}
-                        >
-                          {c.side === "Up" ? "▲ Above" : "▼ Below"}
+                        <span className="text-sm font-semibold text-white">Round #{key}</span>
+                        <span className={`text-xs font-semibold ${
+                          position.side.tag === "Above" ? "text-green-400" : "text-red-400"
+                        }`}>
+                          {position.side.tag === "Above" ? "▲ Above" : "▼ Below"}
                         </span>
                       </div>
-                      <p className="text-xs text-wick-muted">{formatXlm(c.amount)} staked</p>
+                      <p className="text-xs text-zinc-500 mt-0.5">
+                        Strike {formatOraclePrice(round.strike)} · {formatXlm(position.amount)} staked
+                      </p>
                     </div>
-                    <div className="text-right space-y-0.5">
-                      <p className="font-semibold text-up">{formatXlm(c.claimable)}</p>
-                      <ExpiryCountdown settledAtIso={new Date(c.settle_ts * 1000).toISOString()} />
+                    <div className="text-right">
+                      {!isSettled && (
+                        <span className="text-xs text-zinc-500">
+                          {round.status.tag === "Open" ? "● Open" : "● Locked"}
+                        </span>
+                      )}
+                      {isSettled && (
+                        <span className={`text-sm font-bold ${
+                          isVoid ? "text-zinc-400" : isWinner ? "text-green-400" : "text-amber-400"
+                        }`}>
+                          {isVoid ? "VOID" : isWinner ? "WON" : "LOST"}
+                        </span>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
 
-          {/* All positions */}
-          <div className="space-y-3">
-            <h2 className="font-semibold text-white">All positions</h2>
+                  {/* Settled state */}
+                  {isSettled && (
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm text-zinc-400">
+                        {isVoid && "Full refund (void round)"}
+                        {isWinner && `Payout: `}
+                        {isLoser && "Partial refund: "}
+                        {(isWinner || isLoser) && (
+                          <span className={isWinner ? "text-green-400 font-semibold" : "text-amber-400 font-semibold"}>
+                            {formatXlm(payout)}
+                          </span>
+                        )}
+                        {isVoid && (
+                          <span className="text-zinc-300 font-semibold ml-1">{formatXlm(payout)}</span>
+                        )}
+                      </div>
 
-            {IS_MOCK && !connected && (
-              <p className="text-xs text-wick-muted mb-2">
-                Showing sample positions · connect a wallet to see your real history
-              </p>
-            )}
-
-            {positions.length === 0 ? (
-              <p className="py-12 text-center text-wick-muted">No positions yet.</p>
-            ) : (
-              positions.map((p) => (
-                <PositionRow key={`${p.round_id}-${p.id}`} position={p} />
-              ))
-            )}
+                      {canClaim && (
+                        claimState === "done" ? (
+                          <div className="text-right">
+                            <span className="text-green-400 text-sm font-semibold">Claimed ✓</span>
+                            {claimResults[key] && (
+                              <a href={claimResults[key].explorerUrl} target="_blank" rel="noreferrer"
+                                className="block text-xs text-blue-400 underline">View tx →</a>
+                            )}
+                          </div>
+                        ) : position.claimed ? (
+                          <span className="text-xs text-zinc-600">Already claimed</span>
+                        ) : (
+                          <div className="text-right">
+                            <button
+                              onClick={() => void handleClaim(roundId)}
+                              disabled={claimState === "signing"}
+                              className={`rounded-lg px-4 py-1.5 text-sm font-semibold transition-colors disabled:opacity-50 ${
+                                isWinner ? "bg-green-600 text-black hover:bg-green-500"
+                                  : "bg-amber-600 text-black hover:bg-amber-500"
+                              }`}>
+                              {claimState === "signing" ? "Check wallet…" : `Claim ${formatXlm(payout)}`}
+                            </button>
+                            {claimErrors[key] && (
+                              <p className="text-xs text-red-400 mt-1">{claimErrors[key]}</p>
+                            )}
+                          </div>
+                        )
+                      )}
+                      {isSettled && !canClaim && position.claimed && (
+                        <span className="text-xs text-zinc-600">Claimed</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        </>
-      )}
+        )}
+      </div>
     </div>
   );
 }
