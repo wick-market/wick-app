@@ -56,13 +56,24 @@ function useLivePrice() {
   useEffect(() => {
     const fetch_ = async () => {
       try {
-        const r = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=XLMUSDT");
-        const d = (await r.json()) as { price: string };
-        setPrice(parseFloat(d.price).toFixed(4));
-      } catch { /* ignore */ }
+        // CoinGecko — works from all regions, no API key needed
+        const r = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=stellar&vs_currencies=usd",
+          { headers: { Accept: "application/json" } }
+        );
+        const d = (await r.json()) as { stellar?: { usd: number } };
+        if (d.stellar?.usd) setPrice(d.stellar.usd.toFixed(4));
+      } catch {
+        // Fallback: Binance
+        try {
+          const r2 = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=XLMUSDT");
+          const d2 = (await r2.json()) as { price: string };
+          setPrice(parseFloat(d2.price).toFixed(4));
+        } catch { /* ignore */ }
+      }
     };
     void fetch_();
-    const id = setInterval(() => void fetch_(), 5000);
+    const id = setInterval(() => void fetch_(), 10_000);
     return () => clearInterval(id);
   }, []);
   return price;
@@ -126,9 +137,9 @@ function Header({ wallet }: { wallet: ReturnType<typeof useWallet> }) {
               TESTNET
             </span>
           </Link>
-          <nav className="flex gap-3 text-sm text-zinc-500">
-            <Link href="/" className="hover:text-white transition-colors">Markets</Link>
-            <Link href="/positions" className="hover:text-white transition-colors">Positions</Link>
+          <nav className="flex gap-3 text-sm">
+            <Link href="/" className="text-white font-medium">Markets</Link>
+            <Link href="/positions" className="text-zinc-300 hover:text-white transition-colors font-medium">Positions</Link>
           </nav>
         </div>
         {wallet.address ? (

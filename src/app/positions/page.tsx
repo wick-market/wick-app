@@ -46,9 +46,9 @@ function Header({ wallet }: { wallet: ReturnType<typeof useWallet> }) {
             <span className="text-xl font-black tracking-tight text-white">Wick</span>
             <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-400">TESTNET</span>
           </Link>
-          <nav className="flex gap-3 text-sm text-zinc-500">
-            <Link href="/" className="hover:text-white transition-colors">Markets</Link>
-            <Link href="/positions" className="text-white">Positions</Link>
+          <nav className="flex gap-3 text-sm">
+            <Link href="/" className="text-zinc-300 hover:text-white transition-colors font-medium">Markets</Link>
+            <Link href="/positions" className="text-white font-medium">Positions</Link>
           </nav>
         </div>
         {wallet.address ? (
