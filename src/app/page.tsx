@@ -11,12 +11,14 @@ import {
   betBelow,
   settle,
   parseError,
-  formatOraclePrice,
   formatXlm,
   xlmToStroops,
   computeBoosted,
   computeWinnerPayout,
   computeLoserPayout,
+  getOraclePrice,
+  MARKETS,
+  type Market,
   type Round,
   type Position,
   type TxResult,
@@ -49,39 +51,32 @@ function useWallet() {
   return { address, balance, connect, disconnect: doDisconnect, refresh };
 }
 
-// ── Live price from Binance (display only — NOT the settlement price) ─────────
+// ── Live price per market ──────────────────────────────────────────────────────
 
-function useLivePrice() {
+function useLivePrice(selectedMarket: Market) {
   const [price, setPrice] = useState<string | null>(null);
   useEffect(() => {
     const fetch_ = async () => {
-      try {
-        // CoinGecko — works from all regions, no API key needed
-        const r = await fetch(
-          "https://api.coingecko.com/api/v3/simple/price?ids=stellar&vs_currencies=usd",
-          { headers: { Accept: "application/json" } }
-        );
-        const d = (await r.json()) as { stellar?: { usd: number } };
-        if (d.stellar?.usd) setPrice(d.stellar.usd.toFixed(4));
-      } catch {
-        // Fallback: Binance
-        try {
-          const r2 = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=XLMUSDT");
-          const d2 = (await r2.json()) as { price: string };
-          setPrice(parseFloat(d2.price).toFixed(4));
-        } catch { /* ignore */ }
+      // Read the price from the same test oracle the contract settles against —
+      // no external API, no 429s, and the display can never disagree with a round.
+      const data = await getOraclePrice(selectedMarket.symbol);
+      if (data) {
+        setPrice((Number(data.price) / 1e14).toFixed(selectedMarket.decimals));
+        return;
       }
+      setPrice(null);
     };
+    setPrice(null);
     void fetch_();
-    const id = setInterval(() => void fetch_(), 10_000);
+    const id = setInterval(() => void fetch_(), 5_000);
     return () => clearInterval(id);
-  }, []);
+  }, [selectedMarket]);
   return price;
 }
 
-// ── Round ─────────────────────────────────────────────────────────────────────
+// ── Round hook per contract ───────────────────────────────────────────────────
 
-function useRound() {
+function useRound(contractId: string) {
   const [roundId, setRoundId] = useState<bigint | null>(null);
   const [round, setRound] = useState<Round | null>(null);
   const [loading, setLoading] = useState(true);
@@ -89,20 +84,26 @@ function useRound() {
 
   const load = useCallback(async () => {
     try {
-      const id = await getCurrentRoundId();
+      const id = await getCurrentRoundId(contractId);
       if (id > 0n) {
         setRoundId(id);
-        const r = await getRound(id);
+        const r = await getRound(id, contractId);
         setRound(r);
+      } else {
+        setRoundId(null);
+        setRound(null);
       }
     } finally { setLoading(false); }
-  }, []);
+  }, [contractId]);
 
   useEffect(() => {
+    setLoading(true);
+    setRoundId(null);
+    setRound(null);
     void load();
-    poll.current = setInterval(() => void load(), 10_000);
+    poll.current = setInterval(() => void load(), 8_000);
     return () => clearInterval(poll.current);
-  }, [load]);
+  }, [contractId, load]);
 
   return { roundId, round, loading, refresh: load };
 }
@@ -196,8 +197,9 @@ function PhaseBadge({ phase }: { phase: Phase }) {
 
 export default function MarketPage() {
   const wallet = useWallet();
-  const { roundId, round, loading, refresh } = useRound();
-  const livePrice = useLivePrice();
+  const [selectedMarket, setSelectedMarket] = useState<Market>(MARKETS.BTC);
+  const { roundId, round, loading, refresh } = useRound(selectedMarket.contractId);
+  const livePrice = useLivePrice(selectedMarket);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const [position, setPosition] = useState<Position | null>(null);
   const [side, setSide] = useState<"Above" | "Below" | null>(null);
@@ -212,21 +214,22 @@ export default function MarketPage() {
   }, []);
 
   useEffect(() => {
-    if (!wallet.address || !roundId) return;
-    void getPosition(roundId, wallet.address).then(setPosition);
-  }, [wallet.address, roundId]);
+    if (!wallet.address || !roundId) {
+      setPosition(null);
+      return;
+    }
+    void getPosition(roundId, wallet.address, selectedMarket.contractId).then(setPosition);
+  }, [wallet.address, roundId, selectedMarket.contractId]);
 
   const phase = round ? getPhase(round, now) : null;
   const countdownTo = round ? (phase === "Open" ? Number(round.lock_ts) : Number(round.settle_ts)) : 0;
   const secs = Math.max(0, countdownTo - now);
 
-  // Price delta from strike
   const strikeUsd = round ? Number(round.strike) / 1e14 : null;
   const currentUsd = livePrice ? parseFloat(livePrice) : null;
   const delta = strikeUsd && currentUsd ? currentUsd - strikeUsd : null;
   const deltaPct = delta && strikeUsd ? (delta / strikeUsd) * 100 : null;
 
-  // Potential payout preview
   const FEE_BPS = 200n;
   function previewPayout(betSide: "Above" | "Below", betAmt: string): { win: string; refund: string } | null {
     if (!round || !betAmt || !roundId) return null;
@@ -253,12 +256,12 @@ export default function MarketPage() {
     try {
       const stroops = xlmToStroops(amount);
       const res = side === "Above"
-        ? await betAbove(wallet.address, roundId, stroops)
-        : await betBelow(wallet.address, roundId, stroops);
+        ? await betAbove(wallet.address, roundId, stroops, selectedMarket.contractId)
+        : await betBelow(wallet.address, roundId, stroops, selectedMarket.contractId);
       setTxResult(res); setTxState("done");
       void refresh();
       void wallet.refresh(wallet.address);
-      void getPosition(roundId, wallet.address).then(setPosition);
+      void getPosition(roundId, wallet.address, selectedMarket.contractId).then(setPosition);
     } catch (e2) { setTxState("error"); setErr(parseError(e2)); }
   }
 
@@ -266,7 +269,7 @@ export default function MarketPage() {
     if (!roundId || !wallet.address) return;
     setTxState("signing"); setErr(null);
     try {
-      await settle(roundId, wallet.address);
+      await settle(roundId, wallet.address, selectedMarket.contractId);
       setTxState("idle"); void refresh();
     } catch (e2) { setTxState("error"); setErr(parseError(e2)); }
   }
@@ -279,11 +282,40 @@ export default function MarketPage() {
 
       <div className="mx-auto max-w-xl px-4 py-6 space-y-4">
 
+        {/* Multi-Market Tabs */}
+        <div className="grid grid-cols-4 gap-2 p-1 rounded-xl border border-zinc-800 bg-zinc-900/80">
+          {Object.values(MARKETS).map((m) => {
+            const active = m.symbol === selectedMarket.symbol;
+            return (
+              <button
+                key={m.symbol}
+                onClick={() => {
+                  if (!active) {
+                    setSelectedMarket(m);
+                    setSide(null);
+                    setAmount("");
+                    setTxState("idle");
+                    setErr(null);
+                  }
+                }}
+                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg font-bold text-sm transition-all ${
+                  active
+                    ? "bg-blue-600 text-white shadow-lg shadow-blue-500/20"
+                    : "text-zinc-400 hover:text-white hover:bg-zinc-800/60"
+                }`}
+              >
+                <span>{m.icon}</span>
+                <span>{m.symbol}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Loading */}
         {loading && !round && (
           <div className="flex items-center justify-center py-20 gap-3">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-700 border-t-blue-500" />
-            <span className="text-zinc-500 text-sm">Reading from chain…</span>
+            <span className="text-zinc-500 text-sm">Loading {selectedMarket.symbol} market…</span>
           </div>
         )}
 
@@ -294,7 +326,7 @@ export default function MarketPage() {
             <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">XLM / USD · Live</p>
+                  <p className="text-xs text-zinc-500 uppercase tracking-wide mb-1">{selectedMarket.symbol} / USD · Live</p>
                   <p className="text-4xl font-bold text-white font-mono">
                     ${livePrice ?? "—"}
                   </p>
@@ -315,7 +347,7 @@ export default function MarketPage() {
               }`}>
                 <div className="flex justify-between items-center">
                   <div>
-                    <p className="text-xs text-zinc-500 mb-1">Last round #{roundId?.toString()}</p>
+                    <p className="text-xs text-zinc-500 mb-1">Last {selectedMarket.symbol} round #{roundId?.toString()}</p>
                     <p className={`font-bold ${
                       round.outcome.tag === "Above" ? "text-green-400"
                       : round.outcome.tag === "Below" ? "text-red-400"
@@ -329,7 +361,7 @@ export default function MarketPage() {
                   {round.settle_price > 0n && (
                     <div className="text-right">
                       <p className="text-xs text-zinc-500">Settled at</p>
-                      <p className="font-mono text-white">${(Number(round.settle_price) / 1e14).toFixed(4)}</p>
+                      <p className="font-mono text-white">${(Number(round.settle_price) / 1e14).toFixed(selectedMarket.decimals)}</p>
                     </div>
                   )}
                 </div>
@@ -352,7 +384,7 @@ export default function MarketPage() {
               <div className="flex items-start justify-between">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-lg font-bold text-white">XLM / USD</span>
+                    <span className="text-lg font-bold text-white">{selectedMarket.symbol} / USD</span>
                     <PhaseBadge phase={phase} />
                   </div>
                   <p className="text-zinc-600 text-xs">Round #{roundId?.toString()}</p>
@@ -374,7 +406,7 @@ export default function MarketPage() {
                     Strike (round opened)
                   </p>
                   <p className="text-lg font-bold text-white font-mono">
-                    ${strikeUsd?.toFixed(4) ?? "—"}
+                    ${strikeUsd?.toFixed(selectedMarket.decimals) ?? "—"}
                   </p>
                 </div>
                 <div className="rounded-lg bg-zinc-800 px-3 py-2.5">
@@ -432,7 +464,7 @@ export default function MarketPage() {
             {/* Bet form */}
             {phase === "Open" && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5 space-y-4">
-                <h2 className="font-semibold text-white">Place a bet</h2>
+                <h2 className="font-semibold text-white">Place a bet on {selectedMarket.symbol}</h2>
 
                 {!wallet.address ? (
                   <button
@@ -487,8 +519,8 @@ export default function MarketPage() {
                     <div className="space-y-1">
                       <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500">
                         <input
-                          type="number" min="10" step="any"
-                          placeholder="Min 10 XLM"
+                          type="number" min="1" step="any"
+                          placeholder="Min 1 XLM"
                           value={amount}
                           onChange={(e) => setAmount(e.target.value)}
                           disabled={busy}

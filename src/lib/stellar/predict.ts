@@ -9,13 +9,71 @@ import type {
   Position,
   Config,
   Side,
+  PriceData,
+  OracleAsset,
 } from "./predict-bindings/src/index";
-import { Keypair, Networks, rpc } from "@stellar/stellar-sdk";
+import { Networks, Contract, TransactionBuilder, BASE_FEE, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 
-export type { Round, Position, Config, Side };
+export type { Round, Position, Config, Side, PriceData, OracleAsset };
 
-// Demo contract: test oracle, 60s rounds, 45s betting window
-export const CONTRACT_ID = "CAEBJPGQZHNHQIAOXBIWRWRVYJZ3L4DHDVSOVOTHDWN7CQY5FEFIURBJ";
+/**
+ * Test oracle — admin-controlled price feed used by the deployed contracts.
+ * Same SEP-40 interface as Reflector, so reading it here shows exactly the
+ * price a round will settle against. See wick-protocol/contracts/test-oracle.
+ */
+export const TEST_ORACLE = "CBCZDSMRMOYXRLV3IJNC6LC7HKV2UFE5KQ63P5LAKM73LAH4H4CNT4TM";
+
+export interface Market {
+  symbol: string;
+  name: string;
+  contractId: string;
+  decimals: number;
+  icon: string;
+  coingeckoId: string;
+  binanceSymbol: string;
+}
+
+export const MARKETS: Record<"BTC" | "ETH" | "SOL" | "XLM", Market> = {
+  BTC: {
+    symbol: "BTC",
+    name: "Bitcoin",
+    contractId: "CBIDB2UVODQFULE5GDOFCITHADLRWCPOCCN3FUPGKUDEHGZ7P3KRXIA4",
+    decimals: 2,
+    icon: "₿",
+    coingeckoId: "bitcoin",
+    binanceSymbol: "BTCUSDT",
+  },
+  ETH: {
+    symbol: "ETH",
+    name: "Ethereum",
+    contractId: "CAIETRXOO3YYJE7YISGPODJ6HTF2SZY2PC3WPD54ZW2EAWWAMZZWL7IS",
+    decimals: 2,
+    icon: "Ξ",
+    coingeckoId: "ethereum",
+    binanceSymbol: "ETHUSDT",
+  },
+  SOL: {
+    symbol: "SOL",
+    name: "Solana",
+    contractId: "CDAL2IADNQYUWDLZHN72EERCTT2SSPDC6RBXFHR3ZZHDTVGQHD4LG3T3",
+    decimals: 2,
+    icon: "◎",
+    coingeckoId: "solana",
+    binanceSymbol: "SOLUSDT",
+  },
+  XLM: {
+    symbol: "XLM",
+    name: "Stellar",
+    contractId: "CCHKYSNNU27QYKBAWTPHCIHOZQISYQ3GUEC3KVCZ6QPPNWN4QQXTTM3K",
+    decimals: 4,
+    icon: "🚀",
+    coingeckoId: "stellar",
+    binanceSymbol: "XLMUSDT",
+  },
+};
+
+export const DEFAULT_MARKET = MARKETS.BTC;
+export const CONTRACT_ID = DEFAULT_MARKET.contractId;
 export const RPC_URL = "https://soroban-testnet.stellar.org";
 export const NETWORK_PASSPHRASE = Networks.TESTNET;
 export const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx";
@@ -23,21 +81,21 @@ export const EXPLORER_TX = "https://stellar.expert/explorer/testnet/tx";
 // Dummy public key for simulation-only reads (no auth required for views).
 const READ_PK = "GBGCQGIFNIPDRZ6GN5CFSW5T5KCTGLXDY5HD7ISY6EBDVU7Q2YFBDXUJ";
 
-function buildClient(publicKey = READ_PK) {
-  return new Client({ ...networks.testnet, rpcUrl: RPC_URL, publicKey });
+function buildClient(contractId: string = CONTRACT_ID, publicKey = READ_PK) {
+  return new Client({ ...networks.testnet, rpcUrl: RPC_URL, publicKey, contractId });
 }
 
 // ── Views (free, no wallet) ───────────────────────────────────────────────────
 
-export async function getCurrentRoundId(): Promise<bigint> {
-  const client = buildClient();
+export async function getCurrentRoundId(contractId: string = CONTRACT_ID): Promise<bigint> {
+  const client = buildClient(contractId);
   const tx = await client.current_round_id();
   return tx.result as bigint;
 }
 
-export async function getRound(roundId: bigint): Promise<Round | null> {
+export async function getRound(roundId: bigint, contractId: string = CONTRACT_ID): Promise<Round | null> {
   try {
-    const client = buildClient();
+    const client = buildClient(contractId);
     const tx = await client.get_round({ round_id: roundId });
     return tx.result as Round;
   } catch {
@@ -47,10 +105,11 @@ export async function getRound(roundId: bigint): Promise<Round | null> {
 
 export async function getPosition(
   roundId: bigint,
-  userAddress: string
+  userAddress: string,
+  contractId: string = CONTRACT_ID
 ): Promise<Position | null> {
   try {
-    const client = buildClient(userAddress);
+    const client = buildClient(contractId, userAddress);
     const tx = await client.get_position({ round_id: roundId, user: userAddress });
     return (tx.result as Position | null) ?? null;
   } catch {
@@ -58,9 +117,9 @@ export async function getPosition(
   }
 }
 
-export async function getConfig(): Promise<Config | null> {
+export async function getConfig(contractId: string = CONTRACT_ID): Promise<Config | null> {
   try {
-    const client = buildClient();
+    const client = buildClient(contractId);
     const tx = await client.get_config();
     return tx.result as Config;
   } catch {
@@ -68,8 +127,42 @@ export async function getConfig(): Promise<Config | null> {
   }
 }
 
-// ── Mutations (require wallet) ────────────────────────────────────────────────
+// ── Oracle price (test oracle, on-chain) ───────────────────────────────────────
 
+/**
+ * Read the live price the contract actually settles against. Uses a free RPC
+ * simulation (no signing, no wallet), so it replaces CoinGecko/Binance calls
+ * that 429'd or were geo-blocked — and it can never disagree with the round.
+ */
+export async function getOraclePrice(
+  symbol: string,
+  oracleId: string = TEST_ORACLE
+): Promise<{ price: string; timestamp: number } | null> {
+  try {
+    const server = new rpc.Server(RPC_URL, { allowHttp: false });
+    const account = await server.getAccount(READ_PK);
+    const oracle = new Contract(oracleId);
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        oracle.call("lastprice", xdr.ScVal.scvVec([xdr.ScVal.scvSymbol("Other"), xdr.ScVal.scvSymbol(symbol)]))
+      )
+      .setTimeout(30)
+      .build();
+    const sim = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(sim)) return null;
+    const retval = (sim as rpc.Api.SimulateTransactionSuccessResponse).result!.retval;
+    const data = scValToNative(retval) as PriceData | null;
+    if (!data) return null;
+    return { price: data.price.toString(), timestamp: Number(data.timestamp) };
+  } catch {
+    return null;
+  }
+}
+
+// ── Mutations (require wallet) ────────────────────────────────────────────────
 export interface TxResult {
   hash: string;
   explorerUrl: string;
@@ -92,22 +185,20 @@ async function signTx(xdr: string): Promise<{ signedTxXdr: string; signerAddress
   return { signedTxXdr, signerAddress: address };
 }
 
-async function submitTx(
-  method: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tx: { signAndSend: (opts: any) => Promise<any> }
-): Promise<TxResult> {
+// eslint-disable-next-line
+async function submitTx(method: string, tx: any): Promise<TxResult> {
   const sent = await tx.signAndSend({ signTransaction: signTx });
-  const hash = (sent.sendTransactionResponse?.hash as string | undefined) ?? "";
+  const hash = (sent?.sendTransactionResponse?.hash as string | undefined) ?? "";
   return { hash, explorerUrl: `${EXPLORER_TX}/${hash}` };
 }
 
 export async function betAbove(
   userAddress: string,
   roundId: bigint,
-  amountStroops: bigint
+  amountStroops: bigint,
+  contractId: string = CONTRACT_ID
 ): Promise<TxResult> {
-  const client = buildClient(userAddress);
+  const client = buildClient(contractId, userAddress);
   const tx = await client.bet_above({ user: userAddress, round_id: roundId, amount: amountStroops });
   return submitTx("bet_above", tx);
 }
@@ -115,21 +206,30 @@ export async function betAbove(
 export async function betBelow(
   userAddress: string,
   roundId: bigint,
-  amountStroops: bigint
+  amountStroops: bigint,
+  contractId: string = CONTRACT_ID
 ): Promise<TxResult> {
-  const client = buildClient(userAddress);
+  const client = buildClient(contractId, userAddress);
   const tx = await client.bet_below({ user: userAddress, round_id: roundId, amount: amountStroops });
   return submitTx("bet_below", tx);
 }
 
-export async function claim(userAddress: string, roundId: bigint): Promise<TxResult> {
-  const client = buildClient(userAddress);
+export async function claim(
+  userAddress: string,
+  roundId: bigint,
+  contractId: string = CONTRACT_ID
+): Promise<TxResult> {
+  const client = buildClient(contractId, userAddress);
   const tx = await client.claim({ user: userAddress, round_id: roundId });
   return submitTx("claim", tx);
 }
 
-export async function settle(roundId: bigint, callerAddress: string): Promise<TxResult> {
-  const client = buildClient(callerAddress);
+export async function settle(
+  roundId: bigint,
+  callerAddress: string,
+  contractId: string = CONTRACT_ID
+): Promise<TxResult> {
+  const client = buildClient(contractId, callerAddress);
   const tx = await client.settle({ round_id: roundId });
   return submitTx("settle", tx);
 }
@@ -142,7 +242,7 @@ const ERRORS: Record<number, string> = {
   5: "Round not yet settled",
   6: "Round already settled",
   7: "Too early to settle",
-  8: "Minimum bet is 10 XLM",
+  8: "Minimum bet is 1 XLM",
   9: "You already have a position this round",
   10: "Nothing to claim",
   14: "A round already exists for this oracle tick",
@@ -165,12 +265,12 @@ export const ORACLE_DECIMALS = 14n;
 export const STROOP_DECIMALS = 7n;
 export const STROOP_DIVISOR = 10n ** STROOP_DECIMALS; // 10_000_000
 
-/** raw i128 (14 decimals) → display string like "$0.1708" */
-export function formatOraclePrice(raw: bigint): string {
+/** raw i128 (14 decimals) → display string like "$65,432.10" or "$0.1708" */
+export function formatOraclePrice(raw: bigint, displayDecimals = 2): string {
   const d = 10n ** ORACLE_DECIMALS;
   const whole = raw / d;
   const frac = raw % d;
-  const fracStr = frac.toString().padStart(14, "0").slice(0, 4);
+  const fracStr = frac.toString().padStart(14, "0").slice(0, displayDecimals);
   return `$${whole.toLocaleString("en-US")}.${fracStr}`;
 }
 

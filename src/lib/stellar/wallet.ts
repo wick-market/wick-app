@@ -142,8 +142,6 @@ export function parseContractError(err: unknown): string {
 
 // ── Transactions ──────────────────────────────────────────────────────────────
 
-const IS_MOCK = process.env.NEXT_PUBLIC_MOCK === "true";
-
 function mockResult(): TxResult {
   const hash = Array.from({ length: 64 }, () =>
     Math.floor(Math.random() * 16).toString(16)
