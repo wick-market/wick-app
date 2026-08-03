@@ -21,7 +21,7 @@ export type { Round, Position, Config, Side, PriceData, OracleAsset };
  * Same SEP-40 interface as Reflector, so reading it here shows exactly the
  * price a round will settle against. See wick-protocol/contracts/test-oracle.
  */
-export const TEST_ORACLE = "CBCZDSMRMOYXRLV3IJNC6LC7HKV2UFE5KQ63P5LAKM73LAH4H4CNT4TM";
+export const TEST_ORACLE = "CBGWLGKZMEMW2IHDSXRL5QUTYRXSBGNCMQHFHRVZH6UETCNXV4NFDHAG";
 
 export interface Market {
   symbol: string;
@@ -37,7 +37,7 @@ export const MARKETS: Record<"BTC" | "ETH" | "SOL" | "XLM", Market> = {
   BTC: {
     symbol: "BTC",
     name: "Bitcoin",
-    contractId: "CBIDB2UVODQFULE5GDOFCITHADLRWCPOCCN3FUPGKUDEHGZ7P3KRXIA4",
+    contractId: "CAHYZ6K54567DHRSHEOB6BEFDD6GOXGIMX736RJWSSSA6DHLOHKFDOX2",
     decimals: 2,
     icon: "₿",
     coingeckoId: "bitcoin",
@@ -46,7 +46,7 @@ export const MARKETS: Record<"BTC" | "ETH" | "SOL" | "XLM", Market> = {
   ETH: {
     symbol: "ETH",
     name: "Ethereum",
-    contractId: "CAIETRXOO3YYJE7YISGPODJ6HTF2SZY2PC3WPD54ZW2EAWWAMZZWL7IS",
+    contractId: "CC4MONXL6CIZ5F4VSNE2CFQZ6HXTSDJHEEUNGVUSFPUEZUJ7KAOWXSOM",
     decimals: 2,
     icon: "Ξ",
     coingeckoId: "ethereum",
@@ -55,7 +55,7 @@ export const MARKETS: Record<"BTC" | "ETH" | "SOL" | "XLM", Market> = {
   SOL: {
     symbol: "SOL",
     name: "Solana",
-    contractId: "CDAL2IADNQYUWDLZHN72EERCTT2SSPDC6RBXFHR3ZZHDTVGQHD4LG3T3",
+    contractId: "CDDEM7TRNHQMIYTOYZUIFLOAF32K5MBP4WSDMKUGGGPGDCGU73CEYCJN",
     decimals: 2,
     icon: "◎",
     coingeckoId: "solana",
@@ -64,7 +64,7 @@ export const MARKETS: Record<"BTC" | "ETH" | "SOL" | "XLM", Market> = {
   XLM: {
     symbol: "XLM",
     name: "Stellar",
-    contractId: "CCHKYSNNU27QYKBAWTPHCIHOZQISYQ3GUEC3KVCZ6QPPNWN4QQXTTM3K",
+    contractId: "CBQMEF4YZVTEVV3KHSUVOBWWHTTJ2D6YAOGE5TGZT7WTMHJ7ORYMT5HU",
     decimals: 4,
     icon: "🚀",
     coingeckoId: "stellar",
