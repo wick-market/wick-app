@@ -75,22 +75,6 @@ src/
   contexts/               WalletContext
 ```
 
----
-
-## Open issues (contributor-friendly)
-
-The following are typed stubs with clear TODO comments:
-
-| Issue | File | What's needed |
-|---|---|---|
-| #1 Bet transaction | `src/lib/stellar/wallet.ts` | Sign + submit `bet()` via contract bindings |
-| #2 Claim transaction | `src/lib/stellar/wallet.ts` | Sign + submit `claim()` |
-| #3 Batch claim | `src/lib/stellar/wallet.ts` | Sign + submit `claim_many()` |
-| #4 WS reconnect | `src/lib/api/useWebSocket.ts` | Exponential backoff on close |
-
-See CONTRIBUTING.md for how to claim an issue and set up locally.
-
----
 
 ## Testnet only
 
